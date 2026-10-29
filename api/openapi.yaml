@@ -80,6 +80,35 @@ paths:
         "429": { $ref: "#/components/responses/Error" }
         "501": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /v1/checkpoints/{checkpoint}/ledger:
+    get:
+      summary: Raw gzip ledger header file for a checkpoint
+      operationId: checkpointLedger
+      description: |
+        Returns the checkpoint's `ledger-*.xdr.gz` byte for byte so browsers can
+        run `externalize ancestry` over CORS. `checkpoint` must satisfy
+        `(checkpoint + 1) % 64 == 0`.
+      parameters:
+        - name: checkpoint
+          in: path
+          required: true
+          schema: { type: integer, minimum: 63, maximum: 4294967295 }
+      responses:
+        "200":
+          description: |
+            Archived `ledger-*.xdr.gz` stream. Served with a strong `ETag` and
+            `Cache-Control: immutable` (with `s-maxage`).
+          headers:
+            ETag: { schema: { type: string } }
+            X-Request-ID: { schema: { type: string } }
+          content:
+            application/gzip:
+              schema: { type: string, format: binary }
+        "304": { description: Not modified (matched `If-None-Match`). }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
   /v1/status:
     get:
       summary: Archive tip and its lag behind RPC

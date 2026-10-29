@@ -311,3 +311,47 @@ func TestSlowUpstreamsTimeOutCleanly(t *testing.T) {
 		t.Fatalf("status %d: %s", code, body)
 	}
 }
+
+func TestCheckpointLedgerMatchesFixtureAndHandlesErrors(t *testing.T) {
+	srv := newServer(t)
+	code, body, hdr := get(t, srv, "/v1/checkpoints/64791359/ledger")
+	if code != http.StatusOK {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	want, err := os.ReadFile("../../testdata/archive/ledger/03/dc/a3/ledger-03dca33f.xdr.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != string(want) {
+		t.Fatal("served checkpoint ledger differs from the archive fixture")
+	}
+	if ct := hdr.Get("Content-Type"); ct != "application/gzip" {
+		t.Fatalf("want Content-Type application/gzip, got %q", ct)
+	}
+	if cc := hdr.Get("Cache-Control"); !strings.Contains(cc, "immutable") || !strings.Contains(cc, "s-maxage=") {
+		t.Fatalf("checkpoint ledger should be cacheable forever: %q", cc)
+	}
+	etag := hdr.Get("ETag")
+	if len(etag) != 34 {
+		t.Fatalf("missing strong ETag: %q", etag)
+	}
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/checkpoints/64791359/ledger", nil)
+	req.Header.Set("If-None-Match", etag)
+	again, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.Body.Close()
+	if again.StatusCode != http.StatusNotModified {
+		t.Fatalf("want 304, got %d", again.StatusCode)
+	}
+
+	code, body, _ = get(t, srv, "/v1/checkpoints/64791300/ledger")
+	if code != http.StatusBadRequest || !strings.Contains(body, "64791359") {
+		t.Fatalf("non-checkpoint: got %d (%s), want 400 naming 64791359", code, body)
+	}
+	code, body, _ = get(t, srv, "/v1/checkpoints/64791423/ledger")
+	if code != http.StatusNotFound {
+		t.Fatalf("unpublished checkpoint: got %d (%s), want 404", code, body)
+	}
+}

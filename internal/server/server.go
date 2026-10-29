@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -51,6 +52,7 @@ type Server struct {
 //	GET /v1/ledgers/latest/bundle  (302 to the newest archived ledger)
 //	GET /v1/ledgers/{seq}/bundle?tx=<hash>&invocation=<hash>:<op>&contract=<C…>&txset=true
 //	GET /v1/transactions/{hash}/bundle?op=<n>
+//	GET /v1/checkpoints/{checkpoint}/ledger
 func (s *Server) Handler() http.Handler {
 	s.metrics = newMetrics()
 	mux := http.NewServeMux()
@@ -60,6 +62,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/ledgers/latest/bundle", s.latestBundle)
 	mux.HandleFunc("GET /v1/ledgers/{seq}/bundle", s.ledgerBundle)
 	mux.HandleFunc("GET /v1/transactions/{hash}/bundle", s.transactionBundle)
+	mux.HandleFunc("GET /v1/checkpoints/{checkpoint}/ledger", s.checkpointLedger)
 	limited := withRateLimit(newRateLimiter(s.RatePerSecond, max(s.RateBurst, 1)), s.ClientIPHeader, mux)
 	return withAccessLog(s.Log, s.metrics, withCORS(s.CORSOrigins, limited))
 }
@@ -252,4 +255,56 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+type checkpointFileSource interface {
+	FileGz(ctx context.Context, cat archive.Category, checkpoint uint32) ([]byte, error)
+}
+
+func (s *Server) checkpointLedger(w http.ResponseWriter, r *http.Request) {
+	n, err := strconv.ParseUint(r.PathValue("checkpoint"), 10, 32)
+	if err != nil || n == 0 {
+		writeError(w, http.StatusBadRequest, "checkpoint must be a positive 32-bit integer")
+		return
+	}
+	cp := uint32(n)
+	if (cp+1)%archive.CheckpointFrequency != 0 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("ledger %d is not a checkpoint; use %d", cp, archive.Checkpoint(cp)))
+		return
+	}
+	fs, ok := s.Builder.Archive.(checkpointFileSource)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "checkpoint files unavailable")
+		return
+	}
+	timeout := s.BuildTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	gz, err := fs.FileGz(ctx, archive.Headers, cp)
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		writeError(w, http.StatusServiceUnavailable, "fetching the checkpoint timed out; the archive is slow, try again")
+		return
+	}
+	if err != nil {
+		status := statusFor(err)
+		if status >= 500 {
+			s.Log.Error("fetching checkpoint ledger", "path", r.URL.Path, "err", err)
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	sum := sha256.Sum256(gz)
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	h := w.Header()
+	h.Set("ETag", etag)
+	h.Set("Cache-Control", "public, max-age=31536000, s-maxage=31536000, immutable")
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	h.Set("Content-Type", "application/gzip")
+	_, _ = w.Write(gz)
 }

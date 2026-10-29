@@ -115,6 +115,27 @@ func (c *Client) File(ctx context.Context, cat Category, checkpoint uint32) ([]b
 	return raw, nil
 }
 
+// FileGz returns the gzip-compressed contents of a checkpoint file, from the
+// disk cache when present.
+func (c *Client) FileGz(ctx context.Context, cat Category, checkpoint uint32) ([]byte, error) {
+	rel := Path(cat, checkpoint)
+	if c.CacheDir != "" {
+		if gz, err := os.ReadFile(filepath.Join(c.CacheDir, filepath.FromSlash(rel))); err == nil {
+			if _, err := gunzip(gz); err == nil {
+				return gz, nil
+			}
+		}
+	}
+	gz, _, err := c.fetch(ctx, rel)
+	if err != nil {
+		return nil, err
+	}
+	if c.CacheDir != "" {
+		_ = writeAtomic(filepath.Join(c.CacheDir, filepath.FromSlash(rel)), gz)
+	}
+	return gz, nil
+}
+
 // fetch tries every mirror, up to Attempts rounds, and returns the gzip and
 // its decompressed contents from the first mirror that serves a valid file.
 func (c *Client) fetch(ctx context.Context, rel string) ([]byte, []byte, error) {
