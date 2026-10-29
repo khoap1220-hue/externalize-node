@@ -230,7 +230,8 @@ func runStatus(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("archive tip   %d (next checkpoint %d)\n", tip, tip+archive.CheckpointFrequency)
+	next := tip + archive.CheckpointFrequency
+	fmt.Printf("archive tip   %d (next checkpoint %d)\n", tip, next)
 	if c.rpc == "" {
 		return nil
 	}
@@ -239,7 +240,8 @@ func runStatus(args []string) error {
 		return err
 	}
 	lag := int64(latest) - int64(tip)
-	fmt.Printf("rpc latest    %d\narchive lag   %d ledgers (~%ds)\n", latest, lag, lag*6)
+	eta := max((int64(next)-int64(latest))*6+60, 0)
+	fmt.Printf("rpc latest    %d\narchive lag   %d ledgers (~%ds, next checkpoint ~%ds)\n", latest, lag, lag*6, eta)
 	return nil
 }
 

@@ -123,8 +123,39 @@ func TestStatusReportsArchiveLag(t *testing.T) {
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 	code, body, _ := get(t, srv, "/v1/status")
-	if code != http.StatusOK || !strings.Contains(body, `"archive_lag_ledgers":27`) || !strings.Contains(body, `"archive_tip":1023`) {
+	if code != http.StatusOK ||
+		!strings.Contains(body, `"archive_tip":1023`) ||
+		!strings.Contains(body, `"next_checkpoint":1087`) ||
+		!strings.Contains(body, `"archive_lag_ledgers":27`) ||
+		!strings.Contains(body, `"next_checkpoint_eta_seconds":282`) {
 		t.Fatalf("status %d: %s", code, body)
+	}
+}
+
+func TestStatusWithoutRPCAndClampedETA(t *testing.T) {
+	noRPC := &server.Server{
+		Builder:    &bundle.Builder{Network: "Test SDF Network ; September 2015"},
+		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ArchiveTip: func(context.Context) (uint32, error) { return 1023, nil },
+	}
+	srvNoRPC := httptest.NewServer(noRPC.Handler())
+	defer srvNoRPC.Close()
+	code, body, _ := get(t, srvNoRPC, "/v1/status")
+	if code != http.StatusOK || !strings.Contains(body, `"next_checkpoint":1087`) || strings.Contains(body, "next_checkpoint_eta_seconds") {
+		t.Fatalf("status without RPC %d: %s", code, body)
+	}
+
+	overdue := &server.Server{
+		Builder:    &bundle.Builder{Network: "Test SDF Network ; September 2015"},
+		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ArchiveTip: func(context.Context) (uint32, error) { return 1023, nil },
+		RPCLatest:  func(context.Context) (uint32, error) { return 1105, nil },
+	}
+	srvOverdue := httptest.NewServer(overdue.Handler())
+	defer srvOverdue.Close()
+	code, body, _ = get(t, srvOverdue, "/v1/status")
+	if code != http.StatusOK || !strings.Contains(body, `"next_checkpoint_eta_seconds":0`) {
+		t.Fatalf("status overdue %d: %s", code, body)
 	}
 }
 
